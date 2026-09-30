@@ -3,7 +3,7 @@
     <header class="page-head">
       <div>
         <h2>储量估算管理</h2>
-        <p class="page-desc">维护矿体块段，围绕块段编号、矿体名称、面积、厚度做登记、筛选与状态流转。</p>
+        <p class="page-desc">块段边界、品位区间与封边规则使用同一套审批优先口径，结论同步台账、估算清单与储量图。</p>
       </div>
       <div class="page-actions">
         <button class="btn primary" type="button" @click="openCreate">登记矿体块段</button>
@@ -31,15 +31,19 @@
       <thead>
         <tr>
           <th v-for="column in columns" :key="column">{{ column }}</th>
+          <th>口径版本</th>
+          <th>校验码</th>
           <th>可执行动作</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="row in rows" :key="String(row.id)">
-          <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
+          <td v-for="column in columns" :key="column">{{ formatValue(row[column]) }}</td>
+          <td>{{ formatValue(row.formulaVersion) }}</td>
+          <td>{{ formatValue(row.conclusionChecksum) }}</td>
           <td class="row-actions">
             <button
-              v-for="action in actions"
+              v-for="action in availableActions(row)"
               :key="action"
               class="link"
               type="button"
@@ -50,7 +54,7 @@
           </td>
         </tr>
         <tr v-if="!rows.length">
-          <td :colspan="columns.length + 1" class="empty-state">暂无储量估算数据，可先登记矿体块段</td>
+          <td :colspan="columns.length + 3" class="empty-state">暂无储量估算数据，可先登记矿体块段</td>
         </tr>
       </tbody>
     </table>
@@ -67,19 +71,27 @@ import { onMounted, ref } from 'vue'
 
 import { request } from '@/api/client'
 
-type Row = Record<string, string | number | null>
+type Row = Record<string, string | number | boolean | null | Record<string, unknown>>
 
 const ENDPOINT = '/api/reserve'
-const columns = ["块段编号", "矿体名称", "面积", "厚度", "品位", "矿石体重", "资源类别", "块段状态"]
-const actions = ["完成估算", "提交评审", "认定结果"]
-const statuses = ["待估算", "已估算", "待评审", "已认定"]
-const stats = [{"label": "待估算块段", "value": 0}, {"label": "待评审块段", "value": 0}, {"label": "已认定块段", "value": 0}]
+const columns = ['块段编号', '矿体名称', '面积', '面积快照', '厚度', '品位', '矿石体重', '资源类别', '块段边界', '品位区间', '封边规则', '块段状态']
+const statusActions: Record<string, string[]> = {
+  待估算: ['完成估算'],
+  已估算: ['完成估算', '提交评审'],
+  待评审: ['认定结果'],
+  已认定: [],
+}
+const stats = [
+  { label: '待估算块段', value: 0 },
+  { label: '待评审块段', value: 0 },
+  { label: '已认定块段', value: 0 },
+]
 
 const rows = ref<Row[]>([])
 const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
-const filterFields = columns.slice(0, 3)
+const filterFields = ['块段编号', '矿体名称', '块段状态']
 
 function resetFilters() {
   filters.value = {}
@@ -94,6 +106,15 @@ function openCreate() {
   errorMessage.value = '矿体块段登记入口尚未接入审批流'
 }
 
+function formatValue(value: unknown) {
+  if (value === null || value === undefined || value === '') return '—'
+  return String(value)
+}
+
+function availableActions(row: Row) {
+  return statusActions[String(row.status ?? row['块段状态'] ?? '待估算')] ?? ['完成估算']
+}
+
 async function runAction(action: string, row: Row) {
   errorMessage.value = ''
   try {
@@ -101,8 +122,9 @@ async function runAction(action: string, row: Row) {
       method: 'POST',
       body: JSON.stringify({ action }),
     })
-    if (!response.ok) {
-      throw new Error('储量估算动作未生效，请稍后重试')
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.message ?? '储量估算动作未生效，请稍后重试')
     }
     await reload()
   } catch (error) {
@@ -121,6 +143,9 @@ async function reload() {
     const payload = await response.json()
     rows.value = payload.items ?? []
     total.value = payload.total ?? rows.value.length
+    stats[0].value = rows.value.filter(row => row.status === '待估算').length
+    stats[1].value = rows.value.filter(row => row.status === '待评审').length
+    stats[2].value = rows.value.filter(row => row.status === '已认定').length
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '储量估算列表读取失败'
   }
